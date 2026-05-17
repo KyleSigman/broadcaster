@@ -6,14 +6,15 @@
 <title>Пыльца — Стример (Firebase)</title>
 <style>
   body { background:#0a0a0f; color:#e0e0e0; font-family:monospace; padding:20px; max-width:480px; margin:0 auto; }
-  video { width:100%; aspect-ratio:16/9; background:#000; border-radius:12px; }
+  video { width:100%; aspect-ratio:4/3; background:#000; border-radius:12px; }
   button { width:100%; padding:14px; margin-top:12px; background:#ff4081; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:700; cursor:pointer; }
   #status { margin-top:10px; font-size:13px; color:#888; }
   #log { margin-top:10px; font-size:11px; color:#0f0; max-height:250px; overflow-y:auto; background:#000; padding:8px; border-radius:8px; white-space:pre-wrap; }
+  .version { font-size:10px; color:#555; margin-bottom:8px; }
 </style>
 </head>
 <body>
-  <h2>🎬 Стример</h2>
+  <h2>🎬 Стример <span class="version">v2.1 — 160x120, avc1.42001E</span></h2>
   <video id="cam" autoplay muted playsinline></video>
   <button id="startBtn">▶ НАЧАТЬ СТРИМ</button>
   <div id="status">Ожидание...</div>
@@ -48,18 +49,19 @@ function log(msg, color='#0f0') {
 let streaming = false;
 let nalCounter = 0;
 
-log('🟢 Стример запущен');
+log('🟢 Стример v2.1 запущен');
+log('   160x120, avc1.42001E, 10fps, 100kbps');
 
 async function startStream() {
-  log('🎥 Запрашиваю камеру (150px)...');
+  log('🎥 Запрашиваю камеру (160x120)...');
   
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ 
-      video: { width:150, height:84, frameRate:10 }, 
+      video: { width:160, height:120, frameRate:10 }, 
       audio: false 
     });
-    log('✅ Камера получена (150x84, 10fps)', '#0f0');
+    log('✅ Камера получена (160x120, 10fps)', '#0f0');
   } catch(e) {
     log('❌ Ошибка камеры: ' + e.message, '#f55');
     statusEl.textContent = '❌ Нет доступа к камере';
@@ -79,7 +81,6 @@ async function startStream() {
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
       
-      // Отправляем один кадр в секунду
       await set(ref(db, `dust/${nalCounter}`), {
         d: btoa(String.fromCharCode(...Array.from(data))),
         t: Date.now()
@@ -90,7 +91,6 @@ async function startStream() {
         log(`   📡 Отправлено ${nalCounter} кадров, последний: ${data.length} байт`, '#ff0');
       }
       
-      // Ждём 1 секунду
       await new Promise(resolve => setTimeout(resolve, 1000));
     },
     error: (e) => {
@@ -99,13 +99,13 @@ async function startStream() {
   });
 
   encoder.configure({
-    codec: 'avc1.42E01F',
-    width: 150,
-    height: 84,
+    codec: 'avc1.42001E',
+    width: 160,
+    height: 120,
     bitrate: 100_000,
     framerate: 10
   });
-  log('✅ Кодер сконфигурирован (150x84, 100kbps, 10fps)', '#0f0');
+  log('✅ Кодер сконфигурирован', '#0f0');
 
   streaming = true;
   statusEl.textContent = '🔴 LIVE — 1 кадр/сек';
