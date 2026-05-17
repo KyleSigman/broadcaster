@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Пыльца — Стример (4-bit) v5</title>
+<title>Пыльца — Стример (4-bit Delta) v6</title>
 <style>
   body { background:#0a0a0f; color:#e0e0e0; font-family:monospace; padding:10px; max-width:400px; margin:0 auto; }
   video { display:none; }
@@ -11,6 +11,10 @@
   button { width:100%; padding:14px; margin-top:10px; background:#ff4081; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:700; cursor:pointer; }
   #stop-btn { background:#555; }
   #status { margin-top:8px; font-size:12px; color:#888; }
+  #stats-panel { background:#111; border:1px solid #333; border-radius:8px; padding:8px; margin-top:10px; font-family:monospace; font-size:11px; }
+  .stat-row { display:flex; justify-content:space-between; margin:3px 0; }
+  .stat-label { color:#888; }
+  .stat-value { color:#ff4081; font-weight:700; }
   #debug-panel { background:#111; border:1px solid #ff4081; border-radius:8px; padding:8px; margin-top:10px; font-family:monospace; font-size:10px; }
   #debug-content { margin-top:5px; color:#0f0; max-height:150px; overflow-y:auto; white-space:pre-wrap; }
   .button-row { display:flex; gap:10px; }
@@ -18,7 +22,7 @@
 </style>
 </head>
 <body>
-  <h3>🎬 Стример 4-bit v5</h3>
+  <h3>🎬 Стример 4-bit Delta v6</h3>
   <video id="cam" autoplay muted playsinline></video>
   <canvas id="c"></canvas>
   <div class="button-row">
@@ -26,6 +30,14 @@
     <button id="stop-btn" style="display:none;">⏹ СТОП</button>
   </div>
   <div id="status">Ожидание...</div>
+  <div id="stats-panel">
+    <div style="color:#ff4081; font-weight:700; margin-bottom:5px;">📊 Статистика пакета</div>
+    <div class="stat-row"><span class="stat-label">Полных кадров:</span><span class="stat-value" id="stat-full">0</span></div>
+    <div class="stat-row"><span class="stat-label">Дельта-кадров:</span><span class="stat-value" id="stat-delta">0</span></div>
+    <div class="stat-row"><span class="stat-label">Размер до base64:</span><span class="stat-value" id="stat-raw">0</span></div>
+    <div class="stat-row"><span class="stat-label">Размер после base64:</span><span class="stat-value" id="stat-b64">0</span></div>
+    <div class="stat-row"><span class="stat-label">Экономия:</span><span class="stat-value" id="stat-save">0%</span></div>
+  </div>
   <div id="debug-panel">
     <div style="display:flex; justify-content:space-between; align-items:center;">
       <span style="color:#ff4081; font-weight:700;">🛠 DEBUG</span>
@@ -76,6 +88,18 @@ const TARGET_WIDTH = 120;
 const FRAMES_PER_PACKET = 10;
 const CAPTURE_INTERVAL = 100; // ms
 
+// Дельта-кодирование
+let previousFrame = null; // Храним предыдущий кадр между пакетами
+const DELTA_THRESHOLD = 0.4; // 40% порог для дельты
+
+// Статистика текущего пакета
+let packetStats = {
+  fullFrames: 0,
+  deltaFrames: 0,
+  rawSizes: [],
+  frameTypes: []
+};
+
 async function start() {
   debug('🎥 Запрос камеры...', '#ff0');
   
@@ -99,8 +123,9 @@ async function start() {
     
     debug('✅ Камера готова', '#0f0');
     debug(`   Размер камеры: ${video.videoWidth}x${video.videoHeight}`, '#888');
-    debug(`   Целевой размер: ${TARGET_WIDTH}x${finalHeight} (пропорция: ${aspectRatio.toFixed(2)})`, '#888');
-    debug(`   Битовость: 4-bit (яркость, 0-15)`, '#888');
+    debug(`   Целевой размер: ${TARGET_WIDTH}x${finalHeight}`, '#888');
+    debug(`   Битовость: 4-bit яркость`, '#888');
+    debug(`   Дельта-порог: ${DELTA_THRESHOLD * 100}%`, '#888');
   } catch(e) {
     debug('❌ Камера: ' + e.message, '#f55');
     return;
@@ -109,13 +134,24 @@ async function start() {
   streaming = true;
   btn.style.display = 'none';
   stopBtn.style.display = 'block';
-  statusEl.textContent = '🔴 LIVE — буферизация 10 кадров';
-  debug('🔄 Цикл захвата запущен (100ms)', '#ff0');
+  statusEl.textContent = '🔴 LIVE — дельта-кодирование';
+  debug('🔄 Цикл захвата с дельтой запущен', '#ff0');
 
-  // Массив для буферизации кадров
-  const frames = [];
+  // Массив для буферизации записей кадров
+  const frameRecords = [];
   let frameCount = 0;
   const packetStartTime = Date.now();
+  
+  // Сбрасываем статистику пакета
+  packetStats = {
+    fullFrames: 0,
+    deltaFrames: 0,
+    rawSizes: [],
+    frameTypes: []
+  };
+  
+  // Сбрасываем предыдущий кадр при новом старте
+  previousFrame = null;
 
   // Функция захвата одного кадра
   function captureFrame() {
@@ -127,39 +163,70 @@ async function start() {
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const pixels = imageData.data;
       
-      // Конвертация в ч/б 4-bit и упаковка
-      const packedBytes = [];
-      
+      // Конвертация в 4-bit яркость
+      const currentGrayValues = [];
       for (let i = 0; i < pixels.length; i += 4) {
-        // Вычисляем яркость
         const gray = 0.299 * pixels[i] + 0.587 * pixels[i+1] + 0.114 * pixels[i+2];
-        // Квантование в 4 бита (0-15)
         const g4 = Math.round(gray / 255 * 15);
-        packedBytes.push(g4);
+        currentGrayValues.push(g4);
       }
       
-      // Упаковываем по 2 пикселя в байт
-      const frameData = [];
-      for (let i = 0; i < packedBytes.length; i += 2) {
-        if (i + 1 < packedBytes.length) {
-          // Два пикселя: старший и младший полубайты
-          frameData.push((packedBytes[i] << 4) | packedBytes[i+1]);
-        } else {
-          // Последний нечётный пиксель
-          frameData.push(packedBytes[i] << 4);
+      let frameRecord;
+      
+      // Проверяем, можно ли использовать дельту
+      if (previousFrame && previousFrame.length === currentGrayValues.length) {
+        // Вычисляем изменения
+        const changes = [];
+        for (let i = 0; i < currentGrayValues.length; i++) {
+          if (currentGrayValues[i] !== previousFrame[i]) {
+            changes.push({
+              index: i,
+              value: currentGrayValues[i]
+            });
+          }
         }
+        
+        // Решаем: дельта или полный кадр
+        const deltaSize = changes.length * 2.5; // 2 байта на индекс + 0.5 байта на значение
+        const fullSize = currentGrayValues.length; // полный кадр
+        
+        if (deltaSize < fullSize * DELTA_THRESHOLD) {
+          // Используем дельту
+          frameRecord = createDeltaRecord(changes);
+          packetStats.deltaFrames++;
+          packetStats.frameTypes.push('Δ');
+          debug(`🔹 Кадр ${frameCount + 1}: ДЕЛЬТА — ${changes.length} изм. (${(changes.length/currentGrayValues.length*100).toFixed(1)}%)`, '#88f');
+        } else {
+          // Используем полный кадр
+          frameRecord = createFullRecord(currentGrayValues);
+          packetStats.fullFrames++;
+          packetStats.frameTypes.push('■');
+          debug(`🔸 Кадр ${frameCount + 1}: ПОЛНЫЙ — изм. ${(changes.length/currentGrayValues.length*100).toFixed(1)}% (>${DELTA_THRESHOLD*100}%)`, '#f88');
+        }
+      } else {
+        // Первый кадр или изменение размера — всегда полный
+        frameRecord = createFullRecord(currentGrayValues);
+        packetStats.fullFrames++;
+        packetStats.frameTypes.push('■');
+        debug(`■ Кадр ${frameCount + 1}: ПОЛНЫЙ (начальный)`, '#fa0');
       }
       
-      const frameUint8 = new Uint8Array(frameData);
-      frames.push(frameUint8);
+      // Сохраняем текущий кадр как предыдущий
+      previousFrame = [...currentGrayValues];
+      
+      // Добавляем запись в буфер
+      frameRecords.push(frameRecord);
+      packetStats.rawSizes.push(frameRecord.length);
       frameCount++;
       
-      debug(`📸 Кадр ${frameCount}/10 захвачен (${frameUint8.length} байт)`, '#888');
-      
-      // Если набралось 10 кадров — отправляем пакет
-      if (frames.length >= FRAMES_PER_PACKET) {
-        sendPacket(frames, packetStartTime);
-        frames.length = 0; // Очищаем массив
+      // Если набралось 10 записей — отправляем пакет
+      if (frameRecords.length >= FRAMES_PER_PACKET) {
+        sendPacket(frameRecords, packetStartTime);
+        frameRecords.length = 0; // Очищаем массив записей
+        packetStats.rawSizes = [];
+        packetStats.fullFrames = 0;
+        packetStats.deltaFrames = 0;
+        packetStats.frameTypes = [];
       }
       
     } catch(e) {
@@ -172,22 +239,78 @@ async function start() {
     }
   }
 
+  // Создание записи полного кадра (тип 0)
+  function createFullRecord(grayValues) {
+    const record = [];
+    record.push(0); // тип 0 = полный кадр
+    
+    // Упаковываем по 2 пикселя в байт
+    for (let i = 0; i < grayValues.length; i += 2) {
+      if (i + 1 < grayValues.length) {
+        record.push((grayValues[i] << 4) | grayValues[i+1]);
+      } else {
+        record.push(grayValues[i] << 4);
+      }
+    }
+    
+    return new Uint8Array(record);
+  }
+
+  // Создание записи дельты (тип 1)
+  function createDeltaRecord(changes) {
+    const record = [];
+    record.push(1); // тип 1 = дельта
+    
+    // Количество изменений (2 байта, little-endian)
+    const count = changes.length;
+    record.push(count & 0xFF);        // младший байт
+    record.push((count >> 8) & 0xFF); // старший байт
+    
+    // Пакуем изменения: [индекс: 2 байта][значение: 4 бита]
+    let valueBuffer = 0;
+    let valueCount = 0;
+    
+    for (const change of changes) {
+      // Индекс (2 байта, little-endian)
+      record.push(change.index & 0xFF);
+      record.push((change.index >> 8) & 0xFF);
+      
+      // Значение (4 бита) — пакуем по 2 в байт
+      if (valueCount === 0) {
+        valueBuffer = change.value << 4;
+        valueCount = 1;
+      } else {
+        valueBuffer |= change.value;
+        record.push(valueBuffer);
+        valueBuffer = 0;
+        valueCount = 0;
+      }
+    }
+    
+    // Если осталось недописанное значение
+    if (valueCount === 1) {
+      record.push(valueBuffer);
+    }
+    
+    return new Uint8Array(record);
+  }
+
   // Функция отправки пакета
-  async function sendPacket(framesList, startTime) {
+  async function sendPacket(recordsList, startTime) {
     const packStart = performance.now();
     
     try {
-      // Объединяем все кадры в один Uint8Array
+      // Объединяем все записи в один Uint8Array
       let totalLength = 0;
-      for (const frame of framesList) {
-        totalLength += frame.length;
+      for (const record of recordsList) {
+        totalLength += record.length;
       }
       
       const combinedData = new Uint8Array(totalLength);
       let offset = 0;
-      for (const frame of framesList) {
-        combinedData.set(frame, offset);
-        offset += frame.length;
+      for (const record of recordsList) {
+        combinedData.set(record, offset);
+        offset += record.length;
       }
       
       const sizeBefore = combinedData.length;
@@ -216,18 +339,48 @@ async function start() {
       
       const packTime = (performance.now() - packStart).toFixed(1);
       
+      // Вычисляем экономию от дельты
+      const fullSizeTheoretical = (canvas.width * canvas.height / 2 + 1) * FRAMES_PER_PACKET; // если бы все полные
+      const savings = ((1 - sizeBefore / fullSizeTheoretical) * 100).toFixed(1);
+      
+      // Обновляем статистику на экране
+      updateStatsUI(sizeBefore, sizeAfter, savings);
+      
       debug(`📦 ПАКЕТ ОТПРАВЛЕН:`, '#ff0');
-      debug(`   Кадров: ${FRAMES_PER_PACKET}`, '#ff0');
-      debug(`   Размер до base64: ${sizeBefore} байт`, '#ff0');
-      debug(`   Размер после base64: ${sizeAfter} байт (${((sizeAfter/sizeBefore-1)*100).toFixed(1)}% увеличение)`, '#ff0');
+      debug(`   Типы кадров: [${packetStats.frameTypes.join(' ')}]`, '#ff0');
+      debug(`   Полных: ${packetStats.fullFrames}, Дельта: ${packetStats.deltaFrames}`, '#ff0');
+      debug(`   Размер до base64: ${sizeBefore} байт (экономия: ${savings}%)`, '#ff0');
+      debug(`   Размер после base64: ${sizeAfter} байт`, '#ff0');
       debug(`   Время упаковки: ${packTime}ms`, '#ff0');
       debug(`   Путь: dust/${ts}`, '#0f0');
       
-      statusEl.textContent = `🔴 LIVE — пакет ${new Date(ts).toLocaleTimeString()} отправлен`;
+      // Детальная информация по каждому кадру
+      for (let i = 0; i < recordsList.length; i++) {
+        const type = packetStats.frameTypes[i] || '?';
+        const size = recordsList[i].length;
+        debug(`     Кадр ${i+1}: ${type} ${size} байт`, '#666');
+      }
+      
+      statusEl.textContent = `🔴 LIVE — пакет ${new Date(ts).toLocaleTimeString()} (Δ:${packetStats.deltaFrames}/10)`;
       
     } catch(e) {
       debug('💥 ОШИБКА отправки: ' + e.message, '#f55');
     }
+  }
+
+  // Обновление UI статистики
+  function updateStatsUI(rawSize, b64Size, savings) {
+    document.getElementById('stat-full').textContent = packetStats.fullFrames;
+    document.getElementById('stat-delta').textContent = packetStats.deltaFrames;
+    document.getElementById('stat-raw').textContent = `${rawSize} байт (${(rawSize/1024).toFixed(2)} KB)`;
+    document.getElementById('stat-b64').textContent = `${b64Size} байт (${(b64Size/1024).toFixed(2)} KB)`;
+    document.getElementById('stat-save').textContent = `${savings}%`;
+    
+    // Цветовая индикация экономии
+    const saveEl = document.getElementById('stat-save');
+    if (savings > 30) saveEl.style.color = '#4CAF50';
+    else if (savings > 10) saveEl.style.color = '#ff9800';
+    else saveEl.style.color = '#f44336';
   }
 
   // Запускаем захват
@@ -251,11 +404,14 @@ function stop() {
   stopBtn.style.display = 'none';
   statusEl.textContent = '⏹ Остановлен';
   debug('⏹ Стример остановлен пользователем', '#f55');
+  debug(`   Последний previousFrame сохранён: ${previousFrame ? 'да' : 'нет'}`, '#888');
 }
 
 btn.addEventListener('click', start);
 stopBtn.addEventListener('click', stop);
-debug('🟢 Стример v5 загружен (4-bit, буферизация 10 кадров)', '#0f0');
+debug('🟢 Стример Delta v6 загружен', '#0f0');
+debug('   Дельта-порог: 40% изменений', '#0f0');
+debug('   previousFrame сохраняется между пакетами', '#0f0');
 </script>
 </body>
 </html>
