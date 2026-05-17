@@ -47,22 +47,19 @@ function log(msg, color='#0f0') {
 
 let streaming = false;
 let nalCounter = 0;
-let chunkBuffer = [];
-const CHUNK_SIZE = 16384;
 
 log('🟢 Стример запущен');
-log('📡 Firebase: ' + firebaseConfig.databaseURL);
 
 async function startStream() {
-  log('🎥 Запрашиваю камеру...');
+  log('🎥 Запрашиваю камеру (150px)...');
   
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ 
-      video: { width:640, height:360, frameRate:30 }, 
+      video: { width:150, height:84, frameRate:10 }, 
       audio: false 
     });
-    log('✅ Камера получена', '#0f0');
+    log('✅ Камера получена (150x84, 10fps)', '#0f0');
   } catch(e) {
     log('❌ Ошибка камеры: ' + e.message, '#f55');
     statusEl.textContent = '❌ Нет доступа к камере';
@@ -73,89 +70,60 @@ async function startStream() {
   statusEl.textContent = '📷 Камера захвачена. Кодирую...';
   
   const videoTrack = stream.getVideoTracks()[0];
-  log(`   Трек: ${videoTrack.label}, ${videoTrack.getSettings().width}x${videoTrack.getSettings().height}`);
-  
   const processor = new MediaStreamTrackProcessor({ track: videoTrack });
   const reader = processor.readable.getReader();
   log('✅ MediaStreamTrackProcessor создан');
 
   const encoder = new VideoEncoder({
     output: async (chunk) => {
-      log(`   📤 Выход кодера: ${chunk.byteLength} байт, тип=${chunk.type}, timestamp=${chunk.timestamp}`);
-      
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
       
-      // Разбиваем на мини-порции
-      let pieces = 0;
-      for (let i = 0; i < data.length; i += CHUNK_SIZE) {
-        const piece = data.slice(i, i + CHUNK_SIZE);
-        chunkBuffer.push(Array.from(piece));
-        pieces++;
-      }
-      log(`      Разбито на ${pieces} порций, буфер: ${chunkBuffer.length}`);
+      // Отправляем один кадр в секунду
+      await set(ref(db, `dust/${nalCounter}`), {
+        d: btoa(String.fromCharCode(...Array.from(data))),
+        t: Date.now()
+      });
       
-      // Отправляем буфер в Firebase
-      let sent = 0;
-      while (chunkBuffer.length > 0) {
-        const batch = chunkBuffer.splice(0, 5);
-        const promises = batch.map((piece, idx) => {
-          const path = `dust/${nalCounter}`;
-          nalCounter++;
-          return set(ref(db, path), {
-            d: btoa(String.fromCharCode(...piece)),
-            t: Date.now()
-          });
-        });
-        await Promise.all(promises);
-        sent += batch.length;
+      nalCounter++;
+      if (nalCounter % 5 === 0) {
+        log(`   📡 Отправлено ${nalCounter} кадров, последний: ${data.length} байт`, '#ff0');
       }
-      if (sent > 0) log(`   📡 Отправлено ${sent} пылинок в Firebase, всего: ${nalCounter}`, '#ff0');
+      
+      // Ждём 1 секунду
+      await new Promise(resolve => setTimeout(resolve, 1000));
     },
     error: (e) => {
       log('❌ Ошибка кодера: ' + e.message, '#f55');
-      statusEl.textContent = '❌ Ошибка кодера: ' + e.message;
     }
   });
 
-  log('🔧 Конфигурирую кодер (avc1.42E01F, 640x360, 1Mbps)...');
   encoder.configure({
     codec: 'avc1.42E01F',
-    width: 640,
-    height: 360,
-    bitrate: 1_000_000,
-    framerate: 30
+    width: 150,
+    height: 84,
+    bitrate: 100_000,
+    framerate: 10
   });
-  log(`✅ Кодер сконфигурирован, state=${encoder.state}`, '#0f0');
+  log('✅ Кодер сконфигурирован (150x84, 100kbps, 10fps)', '#0f0');
 
   streaming = true;
-  statusEl.textContent = '🔴 LIVE — Отправляю пыльцу...';
+  statusEl.textContent = '🔴 LIVE — 1 кадр/сек';
   startBtn.style.display = 'none';
-  log('🔴 Стрим начат. Читаю кадры с камеры...');
 
-  let frameCount = 0;
-  // Читаем кадры с камеры
   while (streaming) {
     try {
       const { done, value } = await reader.read();
-      if (done) {
-        log('⚠️ Reader завершён (done=true)', '#f55');
-        break;
-      }
-      frameCount++;
-      if (frameCount % 30 === 0) {
-        log(`   📹 Кадр #${frameCount} отправлен в кодер`);
-      }
+      if (done) break;
       encoder.encode(value);
       value.close();
     } catch(e) {
-      log('❌ Ошибка чтения кадра: ' + e.message, '#f55');
+      log('❌ Ошибка чтения: ' + e.message, '#f55');
       break;
     }
   }
   
   log('⏹ Стрим остановлен', '#f55');
-  statusEl.textContent = 'Стрим остановлен';
 }
 
 startBtn.addEventListener('click', startStream);
