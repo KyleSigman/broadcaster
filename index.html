@@ -2,131 +2,134 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Пыльца — Стример (Firebase)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Пыльца — Стример (6-bit)</title>
 <style>
-  body { background:#0a0a0f; color:#e0e0e0; font-family:monospace; padding:20px; max-width:480px; margin:0 auto; }
-  video { width:100%; aspect-ratio:4/3; background:#000; border-radius:12px; }
-  button { width:100%; padding:14px; margin-top:12px; background:#ff4081; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:700; cursor:pointer; }
-  #status { margin-top:10px; font-size:13px; color:#888; }
-  #log { margin-top:10px; font-size:11px; color:#0f0; max-height:250px; overflow-y:auto; background:#000; padding:8px; border-radius:8px; white-space:pre-wrap; }
-  .version { font-size:10px; color:#555; margin-bottom:8px; }
+  body { background:#0a0a0f; color:#e0e0e0; font-family:monospace; padding:10px; max-width:400px; margin:0 auto; }
+  video { display:none; }
+  canvas { width:100%; border-radius:8px; background:#000; }
+  button { width:100%; padding:14px; margin-top:10px; background:#ff4081; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:700; cursor:pointer; }
+  #status { margin-top:8px; font-size:12px; color:#888; }
+  #log { margin-top:8px; font-size:10px; color:#0f0; max-height:200px; overflow-y:auto; background:#000; padding:6px; border-radius:6px; }
 </style>
 </head>
 <body>
-  <h2>🎬 Стример <span class="version">v2.1 — 160x120, avc1.42001E</span></h2>
+  <h3>🎬 Стример 6-bit</h3>
   <video id="cam" autoplay muted playsinline></video>
-  <button id="startBtn">▶ НАЧАТЬ СТРИМ</button>
+  <canvas id="c" width="150" height="84"></canvas>
+  <button id="btn">▶ СТАРТ</button>
   <div id="status">Ожидание...</div>
   <div id="log"></div>
 
 <script type="module">
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getDatabase, ref, set } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+import { getDatabase, ref, set } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
 
-const firebaseConfig = {
-  apiKey: "AIzaSyD7XJDjs..................",
-  authDomain: "creator-75dac.firebaseapp.com",
-  databaseURL: "https://creator-75dac-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "creator-75dac",
-  storageBucket: "creator-75dac.firebasestorage.app",
-  messagingSenderId: "86422721022",
-  appId: "1:86422721022:web:ed2ae88a1bc1be46eff0af"
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC1...",
+  authDomain: "pyltsa.firebaseapp.com",
+  databaseURL: "https://pyltsa-default-rtdb.firebaseio.com",
+  projectId: "pyltsa",
+  storageBucket: "pyltsa.appspot.com",
+  messagingSenderId: "...",
+  appId: "..."
 };
 
-const app = initializeApp(firebaseConfig);
+const app = initializeApp(FIREBASE_CONFIG);
 const db = getDatabase(app);
 
+const video = document.getElementById('cam');
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const btn = document.getElementById('btn');
 const statusEl = document.getElementById('status');
-const startBtn = document.getElementById('startBtn');
-const LOG = document.getElementById('log');
+const logEl = document.getElementById('log');
 
-function log(msg, color='#0f0') {
-  LOG.innerHTML += `<span style="color:${color}">[${(performance.now()/1000).toFixed(2)}s] ${msg}</span>\n`;
-  LOG.scrollTop = LOG.scrollHeight;
+function log(msg) {
+  logEl.textContent += msg + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// 6-bit квантование: каждый канал 0-63 (вместо 0-255)
+function quantize6bit(r, g, b) {
+  return [
+    Math.round(r / 255 * 63),
+    Math.round(g / 255 * 63),
+    Math.round(b / 255 * 63)
+  ];
+}
+
+// Упаковка 6-bit RGB в 18 бит (3×6) — помещается в 3 байта с запасом
+function pack6bit(r6, g6, b6) {
+  return (r6 << 12) | (g6 << 6) | b6;
 }
 
 let streaming = false;
-let nalCounter = 0;
+let frameIdx = 0;
 
-log('🟢 Стример v2.1 запущен');
-log('   160x120, avc1.42001E, 10fps, 100kbps');
-
-async function startStream() {
-  log('🎥 Запрашиваю камеру (160x120)...');
+async function start() {
+  log('🎥 Запрос камеры 150x84...');
   
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ 
-      video: { width:160, height:120, frameRate:10 }, 
+      video: { width:150, height:84, frameRate:{ideal:10} },
       audio: false 
     });
-    log('✅ Камера получена (160x120, 10fps)', '#0f0');
+    video.srcObject = stream;
+    await video.play();
+    log('✅ Камера готова');
   } catch(e) {
-    log('❌ Ошибка камеры: ' + e.message, '#f55');
-    statusEl.textContent = '❌ Нет доступа к камере';
+    log('❌ Камера: ' + e.message);
     return;
   }
-  
-  document.getElementById('cam').srcObject = stream;
-  statusEl.textContent = '📷 Камера захвачена. Кодирую...';
-  
-  const videoTrack = stream.getVideoTracks()[0];
-  const processor = new MediaStreamTrackProcessor({ track: videoTrack });
-  const reader = processor.readable.getReader();
-  log('✅ MediaStreamTrackProcessor создан');
-
-  const encoder = new VideoEncoder({
-    output: async (chunk) => {
-      const data = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(data);
-      
-      await set(ref(db, `dust/${nalCounter}`), {
-        d: btoa(String.fromCharCode(...Array.from(data))),
-        t: Date.now()
-      });
-      
-      nalCounter++;
-      if (nalCounter % 5 === 0) {
-        log(`   📡 Отправлено ${nalCounter} кадров, последний: ${data.length} байт`, '#ff0');
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    },
-    error: (e) => {
-      log('❌ Ошибка кодера: ' + e.message, '#f55');
-    }
-  });
-
-  encoder.configure({
-    codec: 'avc1.42001E',
-    width: 160,
-    height: 120,
-    bitrate: 100_000,
-    framerate: 10
-  });
-  log('✅ Кодер сконфигурирован', '#0f0');
 
   streaming = true;
-  statusEl.textContent = '🔴 LIVE — 1 кадр/сек';
-  startBtn.style.display = 'none';
+  btn.style.display = 'none';
+  statusEl.textContent = '🔴 LIVE — 1 кадр/сек, 6-bit';
 
   while (streaming) {
-    try {
-      const { done, value } = await reader.read();
-      if (done) break;
-      encoder.encode(value);
-      value.close();
-    } catch(e) {
-      log('❌ Ошибка чтения: ' + e.message, '#f55');
-      break;
+    // Рисуем кадр на canvas
+    ctx.drawImage(video, 0, 0, 150, 84);
+    const imageData = ctx.getImageData(0, 0, 150, 84);
+    const pixels = imageData.data;
+    
+    // Преобразуем в 6-bit и пакуем
+    const packed = [];
+    for (let i = 0; i < pixels.length; i += 4) {
+      const r6 = Math.round(pixels[i] / 255 * 63);
+      const g6 = Math.round(pixels[i+1] / 255 * 63);
+      const b6 = Math.round(pixels[i+2] / 255 * 63);
+      packed.push(r6, g6, b6);
     }
+    
+    // В base64: 150*84*3 = 37800 байт
+    const bytes = new Uint8Array(packed);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const b64 = btoa(binary);
+    
+    // Отправляем в Firebase
+    const frameRef = ref(db, `frames/${Date.now()}`);
+    await set(frameRef, {
+      f: frameIdx,
+      t: Date.now(),
+      d: b64,
+      w: 150,
+      h: 84
+    });
+    
+    frameIdx++;
+    log(`📡 Кадр ${frameIdx}: ${b64.length} символов base64`);
+    
+    // Ждём 1 секунду
+    await new Promise(r => setTimeout(r, 1000));
   }
-  
-  log('⏹ Стрим остановлен', '#f55');
 }
 
-startBtn.addEventListener('click', startStream);
+btn.addEventListener('click', start);
 </script>
 </body>
 </html>
