@@ -3,133 +3,144 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>(6-bit)3</title>
+<title>Пыльца — Стример (6-bit) v4</title>
 <style>
   body { background:#0a0a0f; color:#e0e0e0; font-family:monospace; padding:10px; max-width:400px; margin:0 auto; }
   video { display:none; }
   canvas { width:100%; border-radius:8px; background:#000; }
   button { width:100%; padding:14px; margin-top:10px; background:#ff4081; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:700; cursor:pointer; }
   #status { margin-top:8px; font-size:12px; color:#888; }
-  #log { margin-top:8px; font-size:10px; color:#0f0; max-height:200px; overflow-y:auto; background:#000; padding:6px; border-radius:6px; }
+  #debug-panel { background:#111; border:1px solid #ff4081; border-radius:8px; padding:8px; margin-top:10px; font-family:monospace; font-size:10px; }
+  #debug-content { margin-top:5px; color:#0f0; max-height:150px; overflow-y:auto; white-space:pre-wrap; }
 </style>
 </head>
 <body>
-  <h3>🎬 Стример 6-bit 3</h3>
+  <h3>🎬 Стример 6-bit v4</h3>
   <video id="cam" autoplay muted playsinline></video>
   <canvas id="c" width="150" height="84"></canvas>
   <button id="btn">▶ СТАРТ</button>
   <div id="status">Ожидание...</div>
-  <div id="debug-panel" style="background:#111; border:1px solid #ff4081; border-radius:8px; padding:8px; margin-top:10px; font-family:monospace; font-size:10px;">
+  <div id="debug-panel">
     <div style="display:flex; justify-content:space-between; align-items:center;">
       <span style="color:#ff4081; font-weight:700;">🛠 DEBUG</span>
       <button onclick="copyDebug()" style="background:#333; color:#fff; border:none; padding:3px 8px; border-radius:4px; cursor:pointer; font-size:9px;">📋 Копировать</button>
     </div>
-    <div id="debug-content" style="margin-top:5px; color:#0f0; max-height:150px; overflow-y:auto; white-space:pre-wrap;"></div>
+    <div id="debug-content"></div>
   </div>
 
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+import { getDatabase, ref, set } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
 
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD7...............",
+  authDomain: "creator-75dac.firebaseapp.com",
+  databaseURL: "https://creator-75dac-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "creator-75dac",
+  storageBucket: "creator-75dac.firebasestorage.app",
+  messagingSenderId: "86422721022",
+  appId: "1:86422721022:web:ed2ae88a1bc1be46eff0af",
+  measurementId: "G-FN7KWCZX7X"
+};
+
+const app = initializeApp(FIREBASE_CONFIG);
+const db = getDatabase(app);
+
+const video = document.getElementById('cam');
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const btn = document.getElementById('btn');
+const statusEl = document.getElementById('status');
+const debugContent = document.getElementById('debug-content');
+
+function debug(msg, color) {
+  let time = new Date().toLocaleTimeString();
+  debugContent.innerHTML += `<span style="color:${color||'#0f0'}">[${time}] ${msg}</span>\n`;
+  debugContent.scrollTop = debugContent.scrollHeight;
+}
+
+function copyDebug() {
+  navigator.clipboard.writeText(debugContent.innerText).then(() => debug('✅ Скопировано', '#ff0'));
+}
+
+let streaming = false;
+let frameIdx = 0;
+
+async function start() {
+  debug('🎥 Запрос камеры 150x84...', '#ff0');
   
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ 
+      video: { width:150, height:84, frameRate:{ideal:10} },
+      audio: false 
+    });
+    video.srcObject = stream;
+    await video.play();
+    debug('✅ Камера готова', '#0f0');
+    debug('   Размер видео: ' + video.videoWidth + 'x' + video.videoHeight, '#888');
+  } catch(e) {
+    debug('❌ Камера: ' + e.message, '#f55');
+    return;
+  }
 
-  <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-    import { getDatabase, ref, set } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
-    
-    const FIREBASE_CONFIG = {
-      apiKey: "AIzaSyD7...............",
-      authDomain: "creator-75dac.firebaseapp.com",
-      databaseURL: "https://creator-75dac-default-rtdb.europe-west1.firebasedatabase.app",
-      projectId: "creator-75dac",
-      storageBucket: "creator-75dac.firebasestorage.app",
-      messagingSenderId: "86422721022",
-      appId: "1:86422721022:web:ed2ae88a1bc1be46eff0af",
-      measurementId: "G-FN7KWCZX7X"
-  };
-    
-    const app = initializeApp(FIREBASE_CONFIG);
-    const db = getDatabase(app);
-    
-    const video = document.getElementById('cam');
-    const canvas = document.getElementById('c');
-    const ctx = canvas.getContext('2d');
-    const btn = document.getElementById('btn');
-    const statusEl = document.getElementById('status');
-    
-    function debug(msg, color) {
-      let content = document.getElementById('debug-content');
-      let time = new Date().toLocaleTimeString();
-      content.innerHTML += `<span style="color:${color||'#0f0'}">[${time}] ${msg}</span>\n`;
-      content.scrollTop = content.scrollHeight;
-    }
-    
-    function copyDebug() {
-      let text = document.getElementById('debug-content').innerText;
-      navigator.clipboard.writeText(text).then(() => debug('✅ Скопировано', '#ff0'));
-    }
-    
-    let streaming = false;
-    let frameIdx = 0;
-    
-    async function start() {
-      debug('🎥 Запрос камеры 150x84...', '#ff0');
+  streaming = true;
+  btn.style.display = 'none';
+  statusEl.textContent = '🔴 LIVE — 1 кадр/сек, 6-bit';
+  debug('🔄 Цикл захвата запущен', '#ff0');
+
+  while (streaming) {
+    try {
+      ctx.drawImage(video, 0, 0, 150, 84);
+      const imageData = ctx.getImageData(0, 0, 150, 84);
+      const pixels = imageData.data;
+      debug('🎨 Кадр получен: ' + pixels.length + ' байт пикселей', '#888');
       
-      let stream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { width:150, height:84, frameRate:{ideal:10} },
-          audio: false 
-        });
-        video.srcObject = stream;
-        await video.play();
-        debug('✅ Камера готова', '#0f0');
-      } catch(e) {
-        debug('❌ Камера: ' + e.message, '#f55');
-        return;
+      const packed = [];
+      for (let i = 0; i < pixels.length; i += 4) {
+        packed.push(
+          Math.round(pixels[i] / 255 * 63),
+          Math.round(pixels[i+1] / 255 * 63),
+          Math.round(pixels[i+2] / 255 * 63)
+        );
       }
-    
-      streaming = true;
-      btn.style.display = 'none';
-      statusEl.textContent = '🔴 LIVE — 1 кадр/сек, 6-bit';
-    
-      while (streaming) {
-    ctx.drawImage(video, 0, 0, 150, 84);
-    debug('🎨 Кадр отрисован', '#888');
-    const imageData = ctx.getImageData(0, 0, 150, 84);
-        
-        const packed = [];
-        for (let i = 0; i < pixels.length; i += 4) {
-          packed.push(
-            Math.round(pixels[i] / 255 * 63),
-            Math.round(pixels[i+1] / 255 * 63),
-            Math.round(pixels[i+2] / 255 * 63)
-          );
-        }
-        
-        const bytes = new Uint8Array(packed);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const b64 = btoa(binary);
-        
-        const frameRef = ref(db, `frames/${Date.now()}`);
-        await set(frameRef, {
-          f: frameIdx,
-          t: Date.now(),
-          d: b64,
-          w: 150,
-          h: 84
-        });
-        
-        frameIdx++;
-        debug(`📡 Кадр ${frameIdx}: ${b64.length} байт base64`, '#0f0');
-        debug(`   Путь: frames/${Date.now()}`, '#888');
-        debug(`   Размеры: 150x84, 6-bit`, '#888');
-        
-        await new Promise(r => setTimeout(r, 1000));
+      debug('📦 Упаковано: ' + packed.length + ' значений 6-bit', '#888');
+      
+      const bytes = new Uint8Array(packed);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
       }
+      const b64 = btoa(binary);
+      debug('🔡 Base64: ' + b64.length + ' символов', '#888');
+      
+      const ts = Date.now();
+      const frameRef = ref(db, `dust/${ts}`);
+      await set(frameRef, {
+        f: frameIdx,
+        t: ts,
+        d: b64,
+        w: 150,
+        h: 84
+      });
+      
+      frameIdx++;
+      debug('📡 Кадр ' + frameIdx + ' отправлен в dust/' + ts, '#0f0');
+      
+      await new Promise(r => setTimeout(r, 1000));
+    } catch(e) {
+      debug('💥 ОШИБКА: ' + e.message, '#f55');
+      debug('   Стек: ' + e.stack, '#f55');
+      break;
     }
-    
-    btn.addEventListener('click', start);
-    </script>
+  }
+  
+  debug('⏹ Цикл остановлен', '#f55');
+  statusEl.textContent = '⏹ Остановлен';
+}
+
+btn.addEventListener('click', start);
+debug('🟢 Стример v4 загружен', '#0f0');
+</script>
 </body>
 </html>
