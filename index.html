@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Пыльца — Стример (Firebase)</title>
+<style>
+  body { background:#0a0a0f; color:#e0e0e0; font-family:monospace; padding:20px; max-width:480px; margin:0 auto; }
+  video { width:100%; aspect-ratio:16/9; background:#000; border-radius:12px; }
+  button { width:100%; padding:14px; margin-top:12px; background:#ff4081; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:700; cursor:pointer; }
+  #status { margin-top:10px; font-size:13px; color:#888; }
+</style>
+</head>
+<body>
+  <h2>🎬 Стример</h2>
+  <video id="cam" autoplay muted playsinline></video>
+  <button id="startBtn">▶ НАЧАТЬ СТРИМ</button>
+  <div id="status">Ожидание...</div>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getDatabase, ref, set, remove } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyD7XJDjs..................",
+  authDomain: "creator-75dac.firebaseapp.com",
+  databaseURL: "https://creator-75dac-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "creator-75dac",
+  storageBucket: "creator-75dac.firebasestorage.app",
+  messagingSenderId: "86422721022",
+  appId: "1:86422721022:web:ed2ae88a1bc1be46eff0af"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+let streaming = false;
+let nalCounter = 0;
+let chunkBuffer = [];
+const CHUNK_SIZE = 16384;
+
+async function startStream() {
+  const stream = await navigator.mediaDevices.getUserMedia({ 
+    video: { width:640, height:360, frameRate:30 }, 
+    audio: false 
+  });
+  document.getElementById('cam').srcObject = stream;
+  statusEl.textContent = '📷 Камера захвачена. Кодирую...';
+
+  const videoTrack = stream.getVideoTracks()[0];
+  const processor = new MediaStreamTrackProcessor({ track: videoTrack });
+  const reader = processor.readable.getReader();
+
+  const encoder = new VideoEncoder({
+    output: async (chunk) => {
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      
+      // Разбиваем на мини-порции
+      for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+        const piece = data.slice(i, i + CHUNK_SIZE);
+        chunkBuffer.push(Array.from(piece));
+      }
+      
+      // Отправляем буфер в Firebase
+      while (chunkBuffer.length > 0) {
+        const batch = chunkBuffer.splice(0, 5);
+        const promises = batch.map((piece, idx) => {
+          const path = `dust/${nalCounter}`;
+          nalCounter++;
+          return set(ref(db, path), {
+            d: btoa(String.fromCharCode(...piece)),
+            t: Date.now()
+          });
+        });
+        await Promise.all(promises);
+      }
+    },
+    error: (e) => console.error('Encoder error:', e)
+  });
+
+  encoder.configure({
+    codec: 'avc1.42E01F',
+    width: 640,
+    height: 360,
+    bitrate: 1_000_000,
+    framerate: 30
+  });
+
+  streaming = true;
+  statusEl.textContent = '🔴 LIVE — Отправляю пыльцу...';
+  startBtn.style.display = 'none';
+
+  // Читаем кадры с камеры
+  while (streaming) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    encoder.encode(value);
+    value.close();
+  }
+}
+
+startBtn.addEventListener('click', startStream);
+</script>
+</body>
+</html>
