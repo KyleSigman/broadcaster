@@ -19,117 +19,116 @@
   <canvas id="c" width="150" height="84"></canvas>
   <button id="btn">▶ СТАРТ</button>
   <div id="status">Ожидание...</div>
-  <div id="log"></div>
+  <div id="debug-panel" style="background:#111; border:1px solid #ff4081; border-radius:8px; padding:8px; margin-top:10px; font-family:monospace; font-size:10px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <span style="color:#ff4081; font-weight:700;">🛠 DEBUG</span>
+      <button onclick="copyDebug()" style="background:#333; color:#fff; border:none; padding:3px 8px; border-radius:4px; cursor:pointer; font-size:9px;">📋 Копировать</button>
+    </div>
+    <div id="debug-content" style="margin-top:5px; color:#0f0; max-height:150px; overflow-y:auto; white-space:pre-wrap;"></div>
+  </div>
 
-<script type="module">
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-import { getDatabase, ref, set } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
 
-const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC1...",
-  authDomain: "pyltsa.firebaseapp.com",
-  databaseURL: "https://pyltsa-default-rtdb.firebaseio.com",
-  projectId: "pyltsa",
-  storageBucket: "pyltsa.appspot.com",
-  messagingSenderId: "...",
-  appId: "..."
-};
-
-const app = initializeApp(FIREBASE_CONFIG);
-const db = getDatabase(app);
-
-const video = document.getElementById('cam');
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const btn = document.getElementById('btn');
-const statusEl = document.getElementById('status');
-const logEl = document.getElementById('log');
-
-function log(msg) {
-  logEl.textContent += msg + '\n';
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-// 6-bit квантование: каждый канал 0-63 (вместо 0-255)
-function quantize6bit(r, g, b) {
-  return [
-    Math.round(r / 255 * 63),
-    Math.round(g / 255 * 63),
-    Math.round(b / 255 * 63)
-  ];
-}
-
-// Упаковка 6-bit RGB в 18 бит (3×6) — помещается в 3 байта с запасом
-function pack6bit(r6, g6, b6) {
-  return (r6 << 12) | (g6 << 6) | b6;
-}
-
-let streaming = false;
-let frameIdx = 0;
-
-async function start() {
-  log('🎥 Запрос камеры 150x84...');
   
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ 
-      video: { width:150, height:84, frameRate:{ideal:10} },
-      audio: false 
-    });
-    video.srcObject = stream;
-    await video.play();
-    log('✅ Камера готова');
-  } catch(e) {
-    log('❌ Камера: ' + e.message);
-    return;
-  }
 
-  streaming = true;
-  btn.style.display = 'none';
-  statusEl.textContent = '🔴 LIVE — 1 кадр/сек, 6-bit';
-
-  while (streaming) {
-    // Рисуем кадр на canvas
-    ctx.drawImage(video, 0, 0, 150, 84);
-    const imageData = ctx.getImageData(0, 0, 150, 84);
-    const pixels = imageData.data;
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+    import { getDatabase, ref, set } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
     
-    // Преобразуем в 6-bit и пакуем
-    const packed = [];
-    for (let i = 0; i < pixels.length; i += 4) {
-      const r6 = Math.round(pixels[i] / 255 * 63);
-      const g6 = Math.round(pixels[i+1] / 255 * 63);
-      const b6 = Math.round(pixels[i+2] / 255 * 63);
-      packed.push(r6, g6, b6);
+    const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyC1...",
+    authDomain: "pyltsa.firebaseapp.com",
+    databaseURL: "https://pyltsa-default-rtdb.firebaseio.com",
+    projectId: "pyltsa",
+    storageBucket: "pyltsa.appspot.com",
+    messagingSenderId: "...",
+    appId: "..."
+  };
+    
+    const app = initializeApp(FIREBASE_CONFIG);
+    const db = getDatabase(app);
+    
+    const video = document.getElementById('cam');
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const btn = document.getElementById('btn');
+    const statusEl = document.getElementById('status');
+    
+    function debug(msg, color) {
+      let content = document.getElementById('debug-content');
+      let time = new Date().toLocaleTimeString();
+      content.innerHTML += `<span style="color:${color||'#0f0'}">[${time}] ${msg}</span>\n`;
+      content.scrollTop = content.scrollHeight;
     }
     
-    // В base64: 150*84*3 = 37800 байт
-    const bytes = new Uint8Array(packed);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    function copyDebug() {
+      let text = document.getElementById('debug-content').innerText;
+      navigator.clipboard.writeText(text).then(() => debug('✅ Скопировано', '#ff0'));
     }
-    const b64 = btoa(binary);
     
-    // Отправляем в Firebase
-    const frameRef = ref(db, `frames/${Date.now()}`);
-    await set(frameRef, {
-      f: frameIdx,
-      t: Date.now(),
-      d: b64,
-      w: 150,
-      h: 84
-    });
+    let streaming = false;
+    let frameIdx = 0;
     
-    frameIdx++;
-    log(`📡 Кадр ${frameIdx}: ${b64.length} символов base64`);
+    async function start() {
+      debug('🎥 Запрос камеры 150x84...', '#ff0');
+      
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { width:150, height:84, frameRate:{ideal:10} },
+          audio: false 
+        });
+        video.srcObject = stream;
+        await video.play();
+        debug('✅ Камера готова', '#0f0');
+      } catch(e) {
+        debug('❌ Камера: ' + e.message, '#f55');
+        return;
+      }
     
-    // Ждём 1 секунду
-    await new Promise(r => setTimeout(r, 1000));
-  }
-}
-
-btn.addEventListener('click', start);
-</script>
+      streaming = true;
+      btn.style.display = 'none';
+      statusEl.textContent = '🔴 LIVE — 1 кадр/сек, 6-bit';
+    
+      while (streaming) {
+        ctx.drawImage(video, 0, 0, 150, 84);
+        const imageData = ctx.getImageData(0, 0, 150, 84);
+        const pixels = imageData.data;
+        
+        const packed = [];
+        for (let i = 0; i < pixels.length; i += 4) {
+          packed.push(
+            Math.round(pixels[i] / 255 * 63),
+            Math.round(pixels[i+1] / 255 * 63),
+            Math.round(pixels[i+2] / 255 * 63)
+          );
+        }
+        
+        const bytes = new Uint8Array(packed);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const b64 = btoa(binary);
+        
+        const frameRef = ref(db, `frames/${Date.now()}`);
+        await set(frameRef, {
+          f: frameIdx,
+          t: Date.now(),
+          d: b64,
+          w: 150,
+          h: 84
+        });
+        
+        frameIdx++;
+        debug(`📡 Кадр ${frameIdx}: ${b64.length} байт base64`, '#0f0');
+        debug(`   Путь: frames/${Date.now()}`, '#888');
+        debug(`   Размеры: 150x84, 6-bit`, '#888');
+        
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    
+    btn.addEventListener('click', start);
+    </script>
 </body>
 </html>
