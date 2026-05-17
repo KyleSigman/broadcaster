@@ -3,22 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Пыльца — Стример (6-bit) v4</title>
+<title>Пыльца — Стример (4-bit) v5</title>
 <style>
   body { background:#0a0a0f; color:#e0e0e0; font-family:monospace; padding:10px; max-width:400px; margin:0 auto; }
   video { display:none; }
   canvas { width:100%; border-radius:8px; background:#000; }
   button { width:100%; padding:14px; margin-top:10px; background:#ff4081; color:#fff; border:none; border-radius:10px; font-size:16px; font-weight:700; cursor:pointer; }
+  #stop-btn { background:#555; }
   #status { margin-top:8px; font-size:12px; color:#888; }
   #debug-panel { background:#111; border:1px solid #ff4081; border-radius:8px; padding:8px; margin-top:10px; font-family:monospace; font-size:10px; }
   #debug-content { margin-top:5px; color:#0f0; max-height:150px; overflow-y:auto; white-space:pre-wrap; }
+  .button-row { display:flex; gap:10px; }
+  .button-row button { flex:1; }
 </style>
 </head>
 <body>
-  <h3>🎬 Стример 6-bit v4</h3>
+  <h3>🎬 Стример 4-bit v5</h3>
   <video id="cam" autoplay muted playsinline></video>
-  <canvas id="c" width="150" height="84"></canvas>
-  <button id="btn">▶ СТАРТ</button>
+  <canvas id="c"></canvas>
+  <div class="button-row">
+    <button id="btn">▶ СТАРТ</button>
+    <button id="stop-btn" style="display:none;">⏹ СТОП</button>
+  </div>
   <div id="status">Ожидание...</div>
   <div id="debug-panel">
     <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -50,6 +56,7 @@ const video = document.getElementById('cam');
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const btn = document.getElementById('btn');
+const stopBtn = document.getElementById('stop-btn');
 const statusEl = document.getElementById('status');
 const debugContent = document.getElementById('debug-content');
 
@@ -59,26 +66,41 @@ function debug(msg, color) {
   debugContent.scrollTop = debugContent.scrollHeight;
 }
 
-function copyDebug() {
+window.copyDebug = function() {
   navigator.clipboard.writeText(debugContent.innerText).then(() => debug('✅ Скопировано', '#ff0'));
 }
 
 let streaming = false;
-let frameIdx = 0;
+let animationId = null;
+const TARGET_WIDTH = 120;
+const FRAMES_PER_PACKET = 10;
+const CAPTURE_INTERVAL = 100; // ms
 
 async function start() {
-  debug('🎥 Запрос камеры 150x84...', '#ff0');
+  debug('🎥 Запрос камеры...', '#ff0');
   
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ 
-      video: { width:150, height:84, frameRate:{ideal:10} },
+      video: { width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30} },
       audio: false 
     });
     video.srcObject = stream;
     await video.play();
+    
+    // Вычисляем высоту из пропорции камеры
+    const aspectRatio = video.videoWidth / video.videoHeight;
+    const targetHeight = Math.round(TARGET_WIDTH / aspectRatio);
+    // Округляем до чётного
+    const finalHeight = targetHeight % 2 === 0 ? targetHeight : targetHeight + 1;
+    
+    canvas.width = TARGET_WIDTH;
+    canvas.height = finalHeight;
+    
     debug('✅ Камера готова', '#0f0');
-    debug('   Размер видео: ' + video.videoWidth + 'x' + video.videoHeight, '#888');
+    debug(`   Размер камеры: ${video.videoWidth}x${video.videoHeight}`, '#888');
+    debug(`   Целевой размер: ${TARGET_WIDTH}x${finalHeight} (пропорция: ${aspectRatio.toFixed(2)})`, '#888');
+    debug(`   Битовость: 4-bit (яркость, 0-15)`, '#888');
   } catch(e) {
     debug('❌ Камера: ' + e.message, '#f55');
     return;
@@ -86,61 +108,154 @@ async function start() {
 
   streaming = true;
   btn.style.display = 'none';
-  statusEl.textContent = '🔴 LIVE — 1 кадр/сек, 6-bit';
-  debug('🔄 Цикл захвата запущен', '#ff0');
+  stopBtn.style.display = 'block';
+  statusEl.textContent = '🔴 LIVE — буферизация 10 кадров';
+  debug('🔄 Цикл захвата запущен (100ms)', '#ff0');
 
-  while (streaming) {
+  // Массив для буферизации кадров
+  const frames = [];
+  let frameCount = 0;
+  const packetStartTime = Date.now();
+
+  // Функция захвата одного кадра
+  function captureFrame() {
+    if (!streaming) return;
+    
     try {
-      ctx.drawImage(video, 0, 0, 150, 84);
-      const imageData = ctx.getImageData(0, 0, 150, 84);
+      // Захват кадра
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const pixels = imageData.data;
-      debug('🎨 Кадр получен: ' + pixels.length + ' байт пикселей', '#888');
       
-      const packed = [];
+      // Конвертация в ч/б 4-bit и упаковка
+      const packedBytes = [];
+      
       for (let i = 0; i < pixels.length; i += 4) {
-        packed.push(
-          Math.round(pixels[i] / 255 * 63),
-          Math.round(pixels[i+1] / 255 * 63),
-          Math.round(pixels[i+2] / 255 * 63)
-        );
+        // Вычисляем яркость
+        const gray = 0.299 * pixels[i] + 0.587 * pixels[i+1] + 0.114 * pixels[i+2];
+        // Квантование в 4 бита (0-15)
+        const g4 = Math.round(gray / 255 * 15);
+        packedBytes.push(g4);
       }
-      debug('📦 Упаковано: ' + packed.length + ' значений 6-bit', '#888');
       
-      const bytes = new Uint8Array(packed);
-      let binary = '';
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
+      // Упаковываем по 2 пикселя в байт
+      const frameData = [];
+      for (let i = 0; i < packedBytes.length; i += 2) {
+        if (i + 1 < packedBytes.length) {
+          // Два пикселя: старший и младший полубайты
+          frameData.push((packedBytes[i] << 4) | packedBytes[i+1]);
+        } else {
+          // Последний нечётный пиксель
+          frameData.push(packedBytes[i] << 4);
+        }
       }
-      const b64 = btoa(binary);
-      debug('🔡 Base64: ' + b64.length + ' символов', '#888');
       
-      const ts = Date.now();
-      const frameRef = ref(db, `dust/${ts}`);
-      await set(frameRef, {
-        f: frameIdx,
-        t: ts,
-        d: b64,
-        w: 150,
-        h: 84
-      });
+      const frameUint8 = new Uint8Array(frameData);
+      frames.push(frameUint8);
+      frameCount++;
       
-      frameIdx++;
-      debug('📡 Кадр ' + frameIdx + ' отправлен в dust/' + ts, '#0f0');
+      debug(`📸 Кадр ${frameCount}/10 захвачен (${frameUint8.length} байт)`, '#888');
       
-      await new Promise(r => setTimeout(r, 1000));
+      // Если набралось 10 кадров — отправляем пакет
+      if (frames.length >= FRAMES_PER_PACKET) {
+        sendPacket(frames, packetStartTime);
+        frames.length = 0; // Очищаем массив
+      }
+      
     } catch(e) {
-      debug('💥 ОШИБКА: ' + e.message, '#f55');
-      debug('   Стек: ' + e.stack, '#f55');
-      break;
+      debug('💥 ОШИБКА захвата: ' + e.message, '#f55');
+    }
+    
+    // Продолжаем цикл
+    if (streaming) {
+      animationId = setTimeout(captureFrame, CAPTURE_INTERVAL);
     }
   }
+
+  // Функция отправки пакета
+  async function sendPacket(framesList, startTime) {
+    const packStart = performance.now();
+    
+    try {
+      // Объединяем все кадры в один Uint8Array
+      let totalLength = 0;
+      for (const frame of framesList) {
+        totalLength += frame.length;
+      }
+      
+      const combinedData = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const frame of framesList) {
+        combinedData.set(frame, offset);
+        offset += frame.length;
+      }
+      
+      const sizeBefore = combinedData.length;
+      
+      // Кодируем в base64
+      let binary = '';
+      for (let i = 0; i < combinedData.length; i++) {
+        binary += String.fromCharCode(combinedData[i]);
+      }
+      const b64 = btoa(binary);
+      const sizeAfter = b64.length;
+      
+      // Создаём пакет для Firebase
+      const packet = {
+        n: FRAMES_PER_PACKET,
+        w: canvas.width,
+        h: canvas.height,
+        b: 4,
+        t: startTime,
+        d: b64
+      };
+      
+      // Отправляем в Firebase
+      const ts = Date.now();
+      await set(ref(db, `dust/${ts}`), packet);
+      
+      const packTime = (performance.now() - packStart).toFixed(1);
+      
+      debug(`📦 ПАКЕТ ОТПРАВЛЕН:`, '#ff0');
+      debug(`   Кадров: ${FRAMES_PER_PACKET}`, '#ff0');
+      debug(`   Размер до base64: ${sizeBefore} байт`, '#ff0');
+      debug(`   Размер после base64: ${sizeAfter} байт (${((sizeAfter/sizeBefore-1)*100).toFixed(1)}% увеличение)`, '#ff0');
+      debug(`   Время упаковки: ${packTime}ms`, '#ff0');
+      debug(`   Путь: dust/${ts}`, '#0f0');
+      
+      statusEl.textContent = `🔴 LIVE — пакет ${new Date(ts).toLocaleTimeString()} отправлен`;
+      
+    } catch(e) {
+      debug('💥 ОШИБКА отправки: ' + e.message, '#f55');
+    }
+  }
+
+  // Запускаем захват
+  captureFrame();
+}
+
+function stop() {
+  streaming = false;
+  if (animationId) {
+    clearTimeout(animationId);
+    animationId = null;
+  }
   
-  debug('⏹ Цикл остановлен', '#f55');
+  // Останавливаем камеру
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(track => track.stop());
+    video.srcObject = null;
+  }
+  
+  btn.style.display = 'block';
+  stopBtn.style.display = 'none';
   statusEl.textContent = '⏹ Остановлен';
+  debug('⏹ Стример остановлен пользователем', '#f55');
 }
 
 btn.addEventListener('click', start);
-debug('🟢 Стример v4 загружен', '#0f0');
+stopBtn.addEventListener('click', stop);
+debug('🟢 Стример v5 загружен (4-bit, буферизация 10 кадров)', '#0f0');
 </script>
 </body>
 </html>
